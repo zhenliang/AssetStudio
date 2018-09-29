@@ -209,6 +209,13 @@ namespace AssetStudio
                 {
                     sb.AppendFormat("vt {0} {1}\r\n", m_Mesh.m_UV1[v * 2], m_Mesh.m_UV1[v * 2 + 1]);
                 }
+                if (m_Mesh.m_UV2 != null && m_Mesh.m_UV2.Length == m_Mesh.m_VertexCount * 2)
+                {
+                    for (int v = 0; v < m_Mesh.m_VertexCount; v++)
+                    {
+                        sb.AppendFormat("vt2 {0} {1}\r\n", m_Mesh.m_UV2[v * 2], m_Mesh.m_UV2[v * 2 + 1]);
+                    }
+                }
             }
             else if (m_Mesh.m_UV2 != null && m_Mesh.m_UV2.Length == m_Mesh.m_VertexCount * 2)
             {
@@ -233,6 +240,17 @@ namespace AssetStudio
                 for (int v = 0; v < m_Mesh.m_VertexCount; v++)
                 {
                     sb.AppendFormat("vn {0} {1} {2}\r\n", -m_Mesh.m_Normals[v * c], m_Mesh.m_Normals[v * c + 1], m_Mesh.m_Normals[v * c + 2]);
+                }
+            }
+            #endregion
+
+            #region Colors
+            if (m_Mesh.m_Colors != null && m_Mesh.m_Colors.Length > 0)
+            {
+                c = 4;
+                for (int v = 0; v < m_Mesh.m_VertexCount; v++)
+                {
+                    sb.AppendFormat("vc {0} {1} {2} {3}\r\n", -m_Mesh.m_Colors[v * c], m_Mesh.m_Colors[v * c + 1], m_Mesh.m_Colors[v * c + 2], m_Mesh.m_Colors[v * c + 3]);
                 }
             }
             #endregion
