@@ -15,13 +15,14 @@ namespace AssetStudio
         public List<ImportedMesh> MeshList { get; protected set; } = new List<ImportedMesh>();
         public List<ImportedMaterial> MaterialList { get; protected set; } = new List<ImportedMaterial>();
         public List<ImportedTexture> TextureList { get; protected set; } = new List<ImportedTexture>();
-        public List<ImportedAnimation> AnimationList { get; protected set; } = new List<ImportedAnimation>();
+        public List<ImportedKeyframedAnimation> AnimationList { get; protected set; } = new List<ImportedKeyframedAnimation>();
         public List<ImportedMorph> MorphList { get; protected set; } = new List<ImportedMorph>();
 
         private Avatar avatar;
         private Dictionary<uint, string> morphChannelInfo = new Dictionary<uint, string>();
         private HashSet<AssetPreloadData> animationClipHashSet = new HashSet<AssetPreloadData>();
         private Dictionary<uint, string> bonePathHash = new Dictionary<uint, string>();
+        private bool deoptimize;
 
         public ModelConverter(GameObject m_GameObject)
         {
@@ -38,7 +39,13 @@ namespace AssetStudio
 
         public ModelConverter(GameObject m_GameObject, List<AssetPreloadData> animationList)
         {
-            InitWithGameObject(m_GameObject);
+            if (assetsfileList.TryGetPD(m_GameObject.m_Animator, out var m_Animator))
+            {
+                var animator = new Animator(m_Animator);
+                InitWithAnimator(animator);
+            }
+            else
+                InitWithGameObject(m_GameObject);
             foreach (var assetPreloadData in animationList)
             {
                 animationClipHashSet.Add(assetPreloadData);
@@ -79,7 +86,7 @@ namespace AssetStudio
             var frameList = new List<ImportedFrame>();
             while (assetsfileList.TryGetTransform(rootTransform.m_Father, out var m_Father))
             {
-                frameList.Add(ConvertFrames(m_Father));
+                frameList.Add(ConvertFrame(m_Father));
                 rootTransform = m_Father;
             }
             if (frameList.Count > 0)
@@ -185,7 +192,7 @@ namespace AssetStudio
             }
         }
 
-        private ImportedFrame ConvertFrames(Transform trans)
+        private ImportedFrame ConvertFrame(Transform trans)
         {
             var frame = new ImportedFrame();
             assetsfileList.TryGetGameObject(trans.m_GameObject, out var m_GameObject);
@@ -198,9 +205,24 @@ namespace AssetStudio
             return frame;
         }
 
+        private ImportedFrame ConvertFrame(Vector3 t, Quaternion q, Vector3 s, string name)
+        {
+            var frame = new ImportedFrame();
+            frame.Name = name;
+            frame.InitChildren(0);
+            var m_LocalPosition = new[] { t.X, t.Y, t.Z };
+            var m_LocalRotation = new[] { q.X, q.Y, q.Z, q.W };
+            var m_LocalScale = new[] { s.X, s.Y, s.Z };
+            var m_EulerRotation = QuatToEuler(new[] { m_LocalRotation[0], -m_LocalRotation[1], -m_LocalRotation[2], m_LocalRotation[3] });
+            frame.LocalRotation = new[] { m_EulerRotation[0], m_EulerRotation[1], m_EulerRotation[2] };
+            frame.LocalScale = new[] { m_LocalScale[0], m_LocalScale[1], m_LocalScale[2] };
+            frame.LocalPosition = new[] { -m_LocalPosition[0], m_LocalPosition[1], m_LocalPosition[2] };
+            return frame;
+        }
+
         private void ConvertFrames(Transform trans, ImportedFrame parent)
         {
-            var frame = ConvertFrames(trans);
+            var frame = ConvertFrame(trans);
             if (parent == null)
             {
                 FrameList.Add(frame);
@@ -216,7 +238,7 @@ namespace AssetStudio
             }
         }
 
-        private void ConvertMeshRenderer(MeshRenderer meshR)
+        private void ConvertMeshRenderer(Renderer meshR)
         {
             var mesh = GetMesh(meshR);
             if (mesh == null)
@@ -354,10 +376,6 @@ namespace AssetStudio
             {
                 //Bone
                 iMesh.BoneList = new List<ImportedBone>(sMesh.m_Bones.Length);
-                /*if (sMesh.m_Bones.Length >= 256)
-                {
-                    throw new Exception("Too many bones (" + mesh.m_BindPose.Length + ")");
-                }*/
                 for (int i = 0; i < sMesh.m_Bones.Length; i++)
                 {
                     var bone = new ImportedBone();
@@ -403,6 +421,52 @@ namespace AssetStudio
                     om[3, 3] = m[3, 3];
                     bone.Matrix = om;
                     iMesh.BoneList.Add(bone);
+                }
+
+                if (sMesh.m_Bones.Length == 0 && mesh.m_BindPose?.Length > 0 && mesh.m_BoneNameHashes?.Length > 0)
+                {
+                    //TODO move to Init method use Animator.m_HasTransformHierarchy to judge
+                    if (!deoptimize)
+                    {
+                        DeoptimizeTransformHierarchy();
+                        deoptimize = true;
+                    }
+                    //TODO Repeat code with above
+                    for (int i = 0; i < mesh.m_BindPose.Length; i++)
+                    {
+                        var bone = new ImportedBone();
+                        var boneHash = mesh.m_BoneNameHashes[i];
+                        bone.Name = GetNameFromBonePathHashes(boneHash);
+                        if (string.IsNullOrEmpty(bone.Name))
+                        {
+                            bone.Name = avatar?.FindBoneName(boneHash);
+                        }
+                        if (string.IsNullOrEmpty(bone.Name))
+                        {
+                            //throw new Exception("A Bone could neither be found by hash in Avatar nor by index in SkinnedMeshRenderer.");
+                            continue;
+                        }
+                        var om = new float[4, 4];
+                        var m = mesh.m_BindPose[i];
+                        om[0, 0] = m[0, 0];
+                        om[0, 1] = -m[1, 0];
+                        om[0, 2] = -m[2, 0];
+                        om[0, 3] = m[3, 0];
+                        om[1, 0] = -m[0, 1];
+                        om[1, 1] = m[1, 1];
+                        om[1, 2] = m[2, 1];
+                        om[1, 3] = m[3, 1];
+                        om[2, 0] = -m[0, 2];
+                        om[2, 1] = m[1, 2];
+                        om[2, 2] = m[2, 2];
+                        om[2, 3] = m[3, 2];
+                        om[3, 0] = -m[0, 3];
+                        om[3, 1] = m[1, 3];
+                        om[3, 2] = m[2, 3];
+                        om[3, 3] = m[3, 3];
+                        bone.Matrix = om;
+                        iMesh.BoneList.Add(bone);
+                    }
                 }
 
                 //Morphs
@@ -497,13 +561,13 @@ namespace AssetStudio
             MeshList.Add(iMesh);
         }
 
-        private Mesh GetMesh(MeshRenderer meshR)
+        private Mesh GetMesh(Renderer meshR)
         {
             if (meshR is SkinnedMeshRenderer sMesh)
             {
                 if (assetsfileList.TryGetPD(sMesh.m_Mesh, out var MeshPD))
                 {
-                    return new Mesh(MeshPD, true);
+                    return new Mesh(MeshPD);
                 }
             }
             else
@@ -518,7 +582,7 @@ namespace AssetStudio
                             var m_MeshFilter = new MeshFilter(assetPreloadData);
                             if (assetsfileList.TryGetPD(m_MeshFilter.m_Mesh, out var MeshPD))
                             {
-                                return new Mesh(MeshPD, true);
+                                return new Mesh(MeshPD);
                             }
                         }
                     }
@@ -537,7 +601,7 @@ namespace AssetStudio
                 return GetTransformPath(Father) + "/" + m_GameObject.m_Name;
             }
 
-            return String.Empty + m_GameObject.m_Name;
+            return m_GameObject.m_Name;
         }
 
         private ImportedMaterial ConvertMaterial(Material mat)
@@ -651,237 +715,199 @@ namespace AssetStudio
         {
             foreach (var assetPreloadData in animationClipHashSet)
             {
-                var clip = new AnimationClip(assetPreloadData);
-                if (clip.m_Legacy)
+                var animationClip = new AnimationClip(assetPreloadData);
+                var iAnim = new ImportedKeyframedAnimation();
+                AnimationList.Add(iAnim);
+                iAnim.Name = animationClip.m_Name;
+                iAnim.TrackList = new List<ImportedAnimationKeyframedTrack>();
+                if (animationClip.m_Legacy)
                 {
-                    var iAnim = new ImportedKeyframedAnimation();
-                    iAnim.Name = clip.m_Name;
-                    AnimationList.Add(iAnim);
-                    iAnim.TrackList = new List<ImportedAnimationKeyframedTrack>();
-                    foreach (var m_RotationCurve in clip.m_RotationCurves)
+                    foreach (var m_CompressedRotationCurve in animationClip.m_CompressedRotationCurves)
+                    {
+                        var path = m_CompressedRotationCurve.m_Path;
+                        var boneName = path.Substring(path.LastIndexOf('/') + 1);
+                        var track = iAnim.FindTrack(boneName);
+
+                        var numKeys = m_CompressedRotationCurve.m_Times.m_NumItems;
+                        var data = m_CompressedRotationCurve.m_Times.UnpackInts();
+                        var times = new float[numKeys];
+                        int t = 0;
+                        for (int i = 0; i < numKeys; i++)
+                        {
+                            t += data[i];
+                            times[i] = t * 0.01f;
+                        }
+                        var quats = m_CompressedRotationCurve.m_Values.UnpackQuats();
+
+                        for (int i = 0; i < numKeys; i++)
+                        {
+                            var quat = quats[i];
+                            var value = Fbx.QuaternionToEuler(new Quaternion(quat.X, -quat.Y, -quat.Z, quat.W));
+                            track.Rotations.Add(new ImportedKeyframe<Vector3>(times[i], value));
+                        }
+                    }
+                    foreach (var m_RotationCurve in animationClip.m_RotationCurves)
                     {
                         var path = m_RotationCurve.path;
                         var boneName = path.Substring(path.LastIndexOf('/') + 1);
                         var track = iAnim.FindTrack(boneName);
-                        if (track == null)
-                        {
-                            track = new ImportedAnimationKeyframedTrack();
-                            track.Name = boneName;
-                            iAnim.TrackList.Add(track);
-                        }
                         foreach (var m_Curve in m_RotationCurve.curve.m_Curve)
                         {
                             var value = Fbx.QuaternionToEuler(new Quaternion(m_Curve.value.X, -m_Curve.value.Y, -m_Curve.value.Z, m_Curve.value.W));
                             track.Rotations.Add(new ImportedKeyframe<Vector3>(m_Curve.time, value));
                         }
                     }
-                    foreach (var m_PositionCurve in clip.m_PositionCurves)
+                    foreach (var m_PositionCurve in animationClip.m_PositionCurves)
                     {
                         var path = m_PositionCurve.path;
                         var boneName = path.Substring(path.LastIndexOf('/') + 1);
                         var track = iAnim.FindTrack(boneName);
-                        if (track == null)
-                        {
-                            track = new ImportedAnimationKeyframedTrack();
-                            track.Name = boneName;
-                            iAnim.TrackList.Add(track);
-                        }
                         foreach (var m_Curve in m_PositionCurve.curve.m_Curve)
                         {
                             track.Translations.Add(new ImportedKeyframe<Vector3>(m_Curve.time, new Vector3(-m_Curve.value.X, m_Curve.value.Y, m_Curve.value.Z)));
                         }
                     }
-                    foreach (var m_ScaleCurve in clip.m_ScaleCurves)
+                    foreach (var m_ScaleCurve in animationClip.m_ScaleCurves)
                     {
                         var path = m_ScaleCurve.path;
                         var boneName = path.Substring(path.LastIndexOf('/') + 1);
                         var track = iAnim.FindTrack(boneName);
-                        if (track == null)
-                        {
-                            track = new ImportedAnimationKeyframedTrack();
-                            track.Name = boneName;
-                            iAnim.TrackList.Add(track);
-                        }
                         foreach (var m_Curve in m_ScaleCurve.curve.m_Curve)
                         {
                             track.Scalings.Add(new ImportedKeyframe<Vector3>(m_Curve.time, new Vector3(m_Curve.value.X, m_Curve.value.Y, m_Curve.value.Z)));
                         }
                     }
-
-                    if ((bool)Properties.Settings.Default["FixRotation"])
+                    if (animationClip.m_EulerCurves != null)
                     {
-                        foreach (var track in iAnim.TrackList)
+                        foreach (var m_EulerCurve in animationClip.m_EulerCurves)
                         {
-                            var prevKey = new Vector3();
-                            foreach (var rotation in track.Rotations)
+                            var path = m_EulerCurve.path;
+                            var boneName = path.Substring(path.LastIndexOf('/') + 1);
+                            var track = iAnim.FindTrack(boneName);
+                            foreach (var m_Curve in m_EulerCurve.curve.m_Curve)
                             {
-                                var value = rotation.value;
-                                ReplaceOutOfBound(ref prevKey, ref value);
-                                prevKey = value;
-                                rotation.value = value;
+                                track.Rotations.Add(new ImportedKeyframe<Vector3>(m_Curve.time, new Vector3(m_Curve.value.X, -m_Curve.value.Y, -m_Curve.value.Z)));
                             }
+                        }
+                    }
+                    foreach (var m_FloatCurve in animationClip.m_FloatCurves)
+                    {
+                        var path = m_FloatCurve.path;
+                        var boneName = path.Substring(path.LastIndexOf('/') + 1);
+                        var track = iAnim.FindTrack(boneName);
+                        foreach (var m_Curve in m_FloatCurve.curve.m_Curve)
+                        {
+                            track.Curve.Add(new ImportedKeyframe<float>(m_Curve.time, m_Curve.value));
                         }
                     }
                 }
                 else
                 {
-                    var iAnim = new ImportedSampledAnimation();
-                    iAnim.Name = clip.m_Name;
-                    iAnim.SampleRate = clip.m_SampleRate;
-                    AnimationList.Add(iAnim);
-                    int numTracks = (clip.m_MuscleClip.m_Clip.m_ConstantClip.data.Length + (int)clip.m_MuscleClip.m_Clip.m_DenseClip.m_CurveCount + (int)clip.m_MuscleClip.m_Clip.m_StreamedClip.curveCount + 9) / 10;
-                    iAnim.TrackList = new List<ImportedAnimationSampledTrack>(numTracks);
-                    var streamedFrames = clip.m_MuscleClip.m_Clip.m_StreamedClip.ReadData();
-                    float[] streamedValues = new float[clip.m_MuscleClip.m_Clip.m_StreamedClip.curveCount];
-                    int numFrames = Math.Max(clip.m_MuscleClip.m_Clip.m_DenseClip.m_FrameCount, streamedFrames.Count - 2);
-                    for (int frameIdx = 0; frameIdx < numFrames; frameIdx++)
+                    var m_Clip = animationClip.m_MuscleClip.m_Clip;
+                    var streamedFrames = m_Clip.m_StreamedClip.ReadData();
+                    var m_ClipBindingConstant = animationClip.m_ClipBindingConstant;
+                    for (int frameIndex = 1; frameIndex < streamedFrames.Count - 1; frameIndex++)
                     {
-                        if (1 + frameIdx < streamedFrames.Count)
+                        var frame = streamedFrames[frameIndex];
+                        var streamedValues = frame.keyList.Select(x => x.value).ToArray();
+                        for (int curveIndex = 0; curveIndex < frame.keyList.Count;)
                         {
-                            for (int i = 0; i < streamedFrames[1 + frameIdx].keyList.Count; i++)
-                            {
-                                streamedValues[i] = streamedFrames[1 + frameIdx].keyList[i].value;
-                            }
-                        }
-
-                        int numStreamedCurves = 1 + frameIdx < streamedFrames.Count ? streamedFrames[1 + frameIdx].keyList.Count : 0;
-                        int numCurves = numStreamedCurves + (int)clip.m_MuscleClip.m_Clip.m_DenseClip.m_CurveCount + clip.m_MuscleClip.m_Clip.m_ConstantClip.data.Length;
-                        int streamOffset = numStreamedCurves - (int)clip.m_MuscleClip.m_Clip.m_StreamedClip.curveCount;
-                        for (int curveIdx = 0; curveIdx < numCurves;)
-                        {
-                            GenericBinding binding;
-                            float[] data;
-                            int dataOffset;
-                            if (1 + frameIdx < streamedFrames.Count && curveIdx < streamedFrames[1 + frameIdx].keyList.Count)
-                            {
-                                binding = clip.m_ClipBindingConstant.FindBinding(streamedFrames[1 + frameIdx].keyList[curveIdx].index);
-                                data = streamedValues;
-                                dataOffset = 0;
-                            }
-                            else if (curveIdx < numStreamedCurves + clip.m_MuscleClip.m_Clip.m_DenseClip.m_CurveCount)
-                            {
-                                binding = clip.m_ClipBindingConstant.FindBinding(curveIdx - streamOffset);
-                                data = clip.m_MuscleClip.m_Clip.m_DenseClip.m_SampleArray;
-                                dataOffset = numStreamedCurves - frameIdx * (int)clip.m_MuscleClip.m_Clip.m_DenseClip.m_CurveCount;
-                            }
-                            else
-                            {
-                                binding = clip.m_ClipBindingConstant.FindBinding(curveIdx - streamOffset);
-                                data = clip.m_MuscleClip.m_Clip.m_ConstantClip.data;
-                                dataOffset = numStreamedCurves + (int)clip.m_MuscleClip.m_Clip.m_DenseClip.m_CurveCount;
-                            }
-
-                            if (binding.path == 0)
-                            {
-                                curveIdx++;
-                                continue;
-                            }
-
-                            string boneName = GetNameFromHashes(binding.path, binding.attribute);
-                            ImportedAnimationSampledTrack track = iAnim.FindTrack(boneName);
-                            if (track == null)
-                            {
-                                track = new ImportedAnimationSampledTrack();
-                                track.Name = boneName;
-                                iAnim.TrackList.Add(track);
-                            }
-
-                            try
-                            {
-                                switch (binding.attribute)
-                                {
-                                    case 1:
-                                        if (track.Translations == null)
-                                        {
-                                            track.Translations = new Vector3?[numFrames];
-                                        }
-
-                                        track.Translations[frameIdx] = new Vector3
-                                        (
-                                            -data[curveIdx++ - dataOffset],
-                                            data[curveIdx++ - dataOffset],
-                                            data[curveIdx++ - dataOffset]
-                                        );
-                                        break;
-                                    case 2:
-                                        if (track.Rotations == null)
-                                        {
-                                            track.Rotations = new Vector3?[numFrames];
-                                        }
-
-                                        track.Rotations[frameIdx] = Fbx.QuaternionToEuler(new Quaternion
-                                        (
-                                            data[curveIdx++ - dataOffset],
-                                            -data[curveIdx++ - dataOffset],
-                                            -data[curveIdx++ - dataOffset],
-                                            data[curveIdx++ - dataOffset]
-                                        ));
-                                        break;
-                                    case 3:
-                                        if (track.Scalings == null)
-                                        {
-                                            track.Scalings = new Vector3?[numFrames];
-                                        }
-
-                                        track.Scalings[frameIdx] = new Vector3
-                                        (
-                                            data[curveIdx++ - dataOffset],
-                                            data[curveIdx++ - dataOffset],
-                                            data[curveIdx++ - dataOffset]
-                                        );
-                                        break;
-                                    case 4:
-                                        if (track.Rotations == null)
-                                        {
-                                            track.Rotations = new Vector3?[numFrames];
-                                        }
-
-                                        track.Rotations[frameIdx] = new Vector3
-                                        (
-                                            data[curveIdx++ - dataOffset],
-                                            -data[curveIdx++ - dataOffset],
-                                            -data[curveIdx++ - dataOffset]
-                                        );
-                                        break;
-                                    default:
-                                        if (track.Curve == null)
-                                        {
-                                            track.Curve = new float?[numFrames];
-                                        }
-
-                                        track.Curve[frameIdx] = data[curveIdx++ - dataOffset];
-                                        break;
-                                }
-                            }
-                            catch
-                            {
-                                //errors.Append("   ").Append(boneName).Append(" a=").Append(binding.attribute).Append(" ci=").Append(curveIdx).Append("/#=").Append(numCurves).Append(" of=").Append(dataOffset).Append(" f=").Append(frameIdx).Append("/#=").Append(numFrames).Append("\n");
-                                //TODO Display error
-                                break;
-                            }
+                            ReadCurveData(iAnim, m_ClipBindingConstant, frame.keyList[curveIndex].index, frame.time, streamedValues, 0, ref curveIndex);
                         }
                     }
-
-                    if ((bool)Properties.Settings.Default["FixRotation"])
+                    var m_DenseClip = m_Clip.m_DenseClip;
+                    var streamCount = m_Clip.m_StreamedClip.curveCount;
+                    for (int frameIndex = 0; frameIndex < m_DenseClip.m_FrameCount; frameIndex++)
                     {
-                        foreach (var track in iAnim.TrackList)
+                        var time = frameIndex / m_DenseClip.m_SampleRate;
+                        var frameOffset = frameIndex * m_DenseClip.m_CurveCount;
+                        for (int curveIndex = 0; curveIndex < m_DenseClip.m_CurveCount;)
                         {
-                            if (track.Rotations == null)
-                                continue;
-                            var prevKey = new Vector3();
-                            for (var i = 0; i < track.Rotations.Length; i++)
-                            {
-                                var rotation = track.Rotations[i];
-                                if (rotation == null)
-                                    continue;
-                                var value = new Vector3(rotation.Value.X, rotation.Value.Y, rotation.Value.Z);
-                                ReplaceOutOfBound(ref prevKey, ref value);
-                                prevKey = value;
-                                track.Rotations[i] = value;
-                            }
+                            var index = streamCount + curveIndex;
+                            ReadCurveData(iAnim, m_ClipBindingConstant, (int)index, time, m_DenseClip.m_SampleArray, (int)frameOffset, ref curveIndex);
+                        }
+                    }
+                    var m_ConstantClip = m_Clip.m_ConstantClip;
+                    var denseCount = m_Clip.m_DenseClip.m_CurveCount;
+                    var time2 = 0.0f;
+                    for (int i = 0; i < 2; i++)
+                    {
+                        for (int curveIndex = 0; curveIndex < m_ConstantClip.data.Length;)
+                        {
+                            var index = streamCount + denseCount + curveIndex;
+                            ReadCurveData(iAnim, m_ClipBindingConstant, (int)index, time2, m_ConstantClip.data, 0, ref curveIndex);
+                        }
+                        time2 = animationClip.m_MuscleClip.m_StopTime;
+                    }
+                }
+
+                if ((bool)Properties.Settings.Default["FixRotation"])
+                {
+                    foreach (var track in iAnim.TrackList)
+                    {
+                        var prevKey = new Vector3();
+                        foreach (var rotation in track.Rotations)
+                        {
+                            var value = rotation.value;
+                            ReplaceOutOfBound(ref prevKey, ref value);
+                            prevKey = value;
+                            rotation.value = value;
                         }
                     }
                 }
+            }
+        }
+
+        private void ReadCurveData(ImportedKeyframedAnimation iAnim, AnimationClipBindingConstant m_ClipBindingConstant, int index, float time, float[] data, int offset, ref int curveIndex)
+        {
+            var binding = m_ClipBindingConstant.FindBinding(index);
+            if (binding.path == 0)
+            {
+                curveIndex++;
+                return;
+            }
+            var boneName = GetNameFromHashes(binding.path, binding.attribute);
+            var track = iAnim.FindTrack(boneName);
+
+            switch (binding.attribute)
+            {
+                case 1:
+                    track.Translations.Add(new ImportedKeyframe<Vector3>(time, new Vector3
+                    (
+                        -data[curveIndex++ + offset],
+                        data[curveIndex++ + offset],
+                        data[curveIndex++ + offset]
+                    )));
+                    break;
+                case 2:
+                    var value = Fbx.QuaternionToEuler(new Quaternion
+                    (
+                        data[curveIndex++ + offset],
+                        -data[curveIndex++ + offset],
+                        -data[curveIndex++ + offset],
+                        data[curveIndex++ + offset]
+                    ));
+                    track.Rotations.Add(new ImportedKeyframe<Vector3>(time, value));
+                    break;
+                case 3:
+                    track.Scalings.Add(new ImportedKeyframe<Vector3>(time, new Vector3
+                    (
+                        data[curveIndex++ + offset],
+                        data[curveIndex++ + offset],
+                        data[curveIndex++ + offset]
+                    )));
+                    break;
+                case 4:
+                    track.Rotations.Add(new ImportedKeyframe<Vector3>(time, new Vector3
+                    (
+                        data[curveIndex++ + offset],
+                        -data[curveIndex++ + offset],
+                        -data[curveIndex++ + offset]
+                    )));
+                    break;
+                default:
+                    track.Curve.Add(new ImportedKeyframe<float>(time, data[curveIndex++]));
+                    break;
             }
         }
 
@@ -1005,6 +1031,56 @@ namespace AssetStudio
 
             double newValue = count * 360.0 + cur;
             return (float)newValue;
+        }
+
+        private void DeoptimizeTransformHierarchy()
+        {
+            if (avatar == null)
+                return;
+            // 1. Figure out the skeletonPaths from the unstripped avatar
+            var skeletonPaths = new List<string>();
+            foreach (var id in avatar.m_Avatar.m_AvatarSkeleton.m_ID)
+            {
+                var path = avatar.FindBonePath(id);
+                skeletonPaths.Add(path);
+            }
+            // 2. Restore the original transform hierarchy
+            // Prerequisite: skeletonPaths follow pre-order traversal
+            var rootFrame = FrameList[0];
+            rootFrame.ClearChild();
+            for (var i = 1; i < skeletonPaths.Count; i++) // start from 1, skip the root transform because it will always be there.
+            {
+                var path = skeletonPaths[i];
+                var strs = path.Split('/');
+                string transformName;
+                ImportedFrame parentFrame;
+                if (strs.Length == 1)
+                {
+                    transformName = path;
+                    parentFrame = rootFrame;
+                }
+                else
+                {
+                    transformName = strs.Last();
+                    var parentFrameName = strs[strs.Length - 2];
+                    parentFrame = ImportedHelpers.FindFrame(parentFrameName, rootFrame);
+                }
+
+                var skeletonPose = avatar.m_Avatar.m_DefaultPose;
+                var xform = skeletonPose.m_X[i];
+                if (!(xform.t is Vector3 t))
+                {
+                    var v4 = (Vector4)xform.t;
+                    t = (Vector3)v4;
+                }
+                if (!(xform.s is Vector3 s))
+                {
+                    var v4 = (Vector4)xform.s;
+                    s = (Vector3)v4;
+                }
+                var frame = ConvertFrame(t, xform.q, s, transformName);
+                parentFrame.AddChild(frame);
+            }
         }
     }
 }

@@ -4,7 +4,7 @@
 
 namespace AssetStudio
 {
-	void Fbx::Exporter::Export(String^ path, IImported^ imported, bool EulerFilter, float filterPrecision, bool allFrames, bool allBones, bool skins, float boneSize, bool flatInbetween, bool compatibility)
+	void Fbx::Exporter::Export(String^ path, IImported^ imported, bool EulerFilter, float filterPrecision, bool allFrames, bool allBones, bool skins, float boneSize, bool flatInbetween, int versionIndex)
 	{
 		FileInfo^ file = gcnew FileInfo(path);
 		DirectoryInfo^ dir = file->Directory;
@@ -16,7 +16,7 @@ namespace AssetStudio
 		Directory::SetCurrentDirectory(dir->FullName);
 		path = Path::GetFileName(path);
 
-		Exporter^ exporter = gcnew Exporter(path, imported, allFrames, allBones, skins, boneSize, compatibility, true);
+		Exporter^ exporter = gcnew Exporter(path, imported, allFrames, allBones, skins, boneSize, versionIndex, true);
 		exporter->ExportMorphs(imported, false, flatInbetween);
 		exporter->ExportAnimations(EulerFilter, filterPrecision, flatInbetween);
 		exporter->pExporter->Export(exporter->pScene);
@@ -25,7 +25,7 @@ namespace AssetStudio
 		Directory::SetCurrentDirectory(currentDir);
 	}
 
-	void Fbx::Exporter::ExportMorph(String^ path, IImported^ imported, bool morphMask, bool flatInbetween, bool skins, float boneSize, bool compatibility)
+	void Fbx::Exporter::ExportMorph(String^ path, IImported^ imported, bool morphMask, bool flatInbetween, bool skins, float boneSize, int versionIndex)
 	{
 		FileInfo^ file = gcnew FileInfo(path);
 		DirectoryInfo^ dir = file->Directory;
@@ -37,7 +37,7 @@ namespace AssetStudio
 		Directory::SetCurrentDirectory(dir->FullName);
 		path = Path::GetFileName(path);
 
-		Exporter^ exporter = gcnew Exporter(path, imported, false, true, skins, boneSize, compatibility, false);
+		Exporter^ exporter = gcnew Exporter(path, imported, false, true, skins, boneSize, versionIndex, false);
 		exporter->ExportMorphs(imported, morphMask, flatInbetween);
 		exporter->pExporter->Export(exporter->pScene);
 		delete exporter;
@@ -45,7 +45,7 @@ namespace AssetStudio
 		Directory::SetCurrentDirectory(currentDir);
 	}
 
-	Fbx::Exporter::Exporter(String^ path, IImported^ imported, bool allFrames, bool allBones, bool skins, float boneSize, bool compatibility, bool normals)
+	Fbx::Exporter::Exporter(String^ path, IImported^ imported, bool allFrames, bool allBones, bool skins, float boneSize, int versionIndex, bool normals)
 	{
 		this->imported = imported;
 		exportSkins = skins;
@@ -63,24 +63,6 @@ namespace AssetStudio
 		pin_ptr<FbxScene*> pScenePin = &pScene;
 		Init(pSdkManagerPin, pScenePin);
 
-		cDest = Fbx::StringToCharArray(path);
-		pExporter = FbxExporter::Create(pScene, "");
-		int lFormatIndex, lFormatCount = pSdkManager->GetIOPluginRegistry()->GetWriterFormatCount();
-		for (lFormatIndex = 0; lFormatIndex < lFormatCount; lFormatIndex++)
-		{
-			if (pSdkManager->GetIOPluginRegistry()->WriterIsFBX(lFormatIndex))
-			{
-				FbxString lDesc = FbxString(pSdkManager->GetIOPluginRegistry()->GetWriterFormatDescription(lFormatIndex));
-				if (lDesc.Find("binary") >= 0)
-				{
-					if (!compatibility || lDesc.Find("6.") >= 0)
-					{
-						break;
-					}
-				}
-			}
-		}
-
 		IOS_REF.SetBoolProp(EXP_FBX_MATERIAL, true);
 		IOS_REF.SetBoolProp(EXP_FBX_TEXTURE, true);
 		IOS_REF.SetBoolProp(EXP_FBX_EMBEDDED, false);
@@ -90,13 +72,14 @@ namespace AssetStudio
 		IOS_REF.SetBoolProp(EXP_FBX_GLOBAL_SETTINGS, true);
 
 		FbxGlobalSettings& globalSettings = pScene->GetGlobalSettings();
-		FbxTime::EMode pTimeMode = FbxTime::eFrames24;
-		globalSettings.SetTimeMode(pTimeMode);
 
-		if (!pExporter->Initialize(cDest, lFormatIndex, pSdkManager->GetIOSettings()))
+		cDest = StringToCharArray(path);
+		pExporter = FbxExporter::Create(pScene, "");
+		if (!pExporter->Initialize(cDest, 0, pSdkManager->GetIOSettings()))
 		{
 			throw gcnew Exception(gcnew String("Failed to initialize FbxExporter: ") + gcnew String(pExporter->GetStatus().GetErrorString()));
 		}
+		pExporter->SetFileExportVersion(FBXVersion[versionIndex], FbxSceneRenamer::ERenamingMode::eNone);
 
 		frameNames = nullptr;
 		if (!allFrames)
@@ -130,7 +113,7 @@ namespace AssetStudio
 					meshPath = gcnew String(rootNode->GetName()) + "/" + meshPath;
 				}
 				ImportedMesh^ mesh = ImportedHelpers::FindMesh(meshPath, imported->MeshList);
-				ExportMesh(meshNode, mesh, normals);
+  				ExportMesh(meshNode, mesh, normals);
 			}
 		}
 		else
@@ -489,7 +472,6 @@ namespace AssetStudio
 							if (pTextureDiffuse != NULL)
 							{
 								LinkTexture(mat, 0, pTextureDiffuse, pMat->Diffuse);
-								pMat->TransparentColor.ConnectSrcObject(pTextureDiffuse);
 								hasTexture = true;
 							}
 
@@ -546,7 +528,8 @@ namespace AssetStudio
 							lGeometryElementNormal->GetDirectArray().Add(FbxVector4(normal.X, normal.Y, normal.Z, 0));
 						}
 						array<float>^ uv = vertex->UV;
-						lGeometryElementUV->GetDirectArray().Add(FbxVector2(uv[0], -uv[1]));
+						if (uv != nullptr)
+							lGeometryElementUV->GetDirectArray().Add(FbxVector2(uv[0], -uv[1]));
 						if (normals)
 						{
 							Vector4 tangent = vertex->Tangent;
@@ -571,13 +554,10 @@ namespace AssetStudio
 					for (int j = 0; j < faceList->Count; j++)
 					{
 						ImportedFace^ face = faceList[j];
-						unsigned short v1 = (unsigned short)face->VertexIndices[0];
-						unsigned short v2 = (unsigned short)face->VertexIndices[1];
-						unsigned short v3 = (unsigned short)face->VertexIndices[2];
-						pMesh->BeginPolygon(false);
-						pMesh->AddPolygon(v1);
-						pMesh->AddPolygon(v2);
-						pMesh->AddPolygon(v3);
+						pMesh->BeginPolygon(0);
+						pMesh->AddPolygon(face->VertexIndices[0]);
+						pMesh->AddPolygon(face->VertexIndices[1]);
+						pMesh->AddPolygon(face->VertexIndices[2]);
 						pMesh->EndPolygon();
 					}
 
@@ -589,7 +569,6 @@ namespace AssetStudio
 							FbxCluster* pCluster = pClusterArray->GetAt(j);
 							if (pCluster->GetControlPointIndicesCount() > 0)
 							{
-								FbxNode* pBoneNode = pBoneNodeList->GetAt(j);
 								auto boneMatrix = boneList[j]->Matrix;
 								FbxAMatrix lBoneMatrix;
 								for (int m = 0; m < 4; m++)
@@ -621,7 +600,7 @@ namespace AssetStudio
 					{
 						delete pClusterArray;
 					}
-				Marshal::FreeHGlobal((IntPtr)pName);
+					Marshal::FreeHGlobal((IntPtr)pName);
 				}
 			}
 		}
@@ -713,13 +692,11 @@ namespace AssetStudio
 
 	void Fbx::Exporter::ExportAnimations(bool EulerFilter, float filterPrecision, bool flatInbetween)
 	{
-		List<ImportedAnimation^>^ importedAnimationList = imported->AnimationList;
+		auto importedAnimationList = imported->AnimationList;
 		if (importedAnimationList == nullptr)
 		{
 			return;
 		}
-
-		List<String^>^ pNotFound = gcnew List<String^>();
 
 		FbxAnimCurveFilterUnroll* lFilter = EulerFilter ? new FbxAnimCurveFilterUnroll() : NULL;
 
@@ -740,37 +717,16 @@ namespace AssetStudio
 			{
 				kTakeName = FbxString("Take") + FbxString(i);
 			}
-			bool keyframed = dynamic_cast<ImportedKeyframedAnimation^>(importedAnimation) != nullptr;
-			if (keyframed)
-			{
-				ImportedKeyframedAnimation^ parser = (ImportedKeyframedAnimation^)importedAnimation;
-				ExportKeyframedAnimation(parser, kTakeName, lFilter, filterPrecision, pNotFound);
-			}
-			else
-			{
-				ImportedSampledAnimation^ parser = (ImportedSampledAnimation^)importedAnimation;
-				ExportSampledAnimation(parser, kTakeName, lFilter, filterPrecision, flatInbetween, pNotFound);
-			}
+			ExportKeyframedAnimation(importedAnimation, kTakeName, lFilter, filterPrecision, flatInbetween);
 		}
-
-		/*if (pNotFound->Count > 0)
-		{
-			String^ pNotFoundString = gcnew String("Warning: Animations weren't exported for the following missing frames or morphs: ");
-			for (int i = 0; i < pNotFound->Count; i++)
-			{
-				pNotFoundString += pNotFound[i] + ", ";
-			}
-			Report::ReportLog(pNotFoundString->Substring(0, pNotFoundString->Length - 2));
-		}*/
 	}
 
-	void Fbx::Exporter::ExportKeyframedAnimation(ImportedKeyframedAnimation^ parser, FbxString& kTakeName, FbxAnimCurveFilterUnroll* EulerFilter, float filterPrecision, List<String^>^ pNotFound)
+	void Fbx::Exporter::ExportKeyframedAnimation(ImportedKeyframedAnimation^ parser, FbxString& kTakeName, FbxAnimCurveFilterUnroll* EulerFilter, float filterPrecision, bool flatInbetween)
 	{
 		List<ImportedAnimationKeyframedTrack^>^ pAnimationList = parser->TrackList;
 
 		char* lTakeName = kTakeName.Buffer();
 
-		FbxTime lTime;
 		FbxAnimStack* lAnimStack = FbxAnimStack::Create(pScene, lTakeName);
 		FbxAnimLayer* lAnimLayer = FbxAnimLayer::Create(pScene, "Base Layer");
 		lAnimStack->AddMember(lAnimLayer);
@@ -788,7 +744,7 @@ namespace AssetStudio
 			char* pName = NULL;
 			try
 			{
-				pName = Fbx::StringToCharArray(name);
+				pName = StringToCharArray(name);
 				pNode = pScene->GetRootNode()->FindChild(pName);
 			}
 			finally
@@ -796,14 +752,7 @@ namespace AssetStudio
 				Marshal::FreeHGlobal((IntPtr)pName);
 			}
 
-				if (pNode == NULL)
-				{
-					if (!pNotFound->Contains(name))
-					{
-						pNotFound->Add(name);
-					}
-				}
-				else
+				if (pNode != NULL)
 				{
 					FbxAnimCurve* lCurveSX = pNode->LclScaling.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
 					FbxAnimCurve* lCurveSY = pNode->LclScaling.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
@@ -824,6 +773,8 @@ namespace AssetStudio
 					lCurveTX->KeyModifyBegin();
 					lCurveTY->KeyModifyBegin();
 					lCurveTZ->KeyModifyBegin();
+
+					FbxTime lTime;
 
 					for each (auto Scaling in keyframeList->Scalings)
 					{
@@ -871,163 +822,14 @@ namespace AssetStudio
 						EulerFilter->SetQualityTolerance(filterPrecision);
 						EulerFilter->Apply(lCurve, 3);
 					}
-				}
-		}
-	}
 
-	void Fbx::Exporter::ExportSampledAnimation(ImportedSampledAnimation^ parser, FbxString& kTakeName, FbxAnimCurveFilterUnroll* EulerFilter, float filterPrecision, bool flatInbetween, List<String^>^ pNotFound)
-	{
-		List<ImportedAnimationSampledTrack^>^ pAnimationList = parser->TrackList;
-
-		char* lTakeName = kTakeName.Buffer();
-
-		FbxTime lTime;
-		FbxAnimStack* lAnimStack = FbxAnimStack::Create(pScene, lTakeName);
-		FbxAnimLayer* lAnimLayer = FbxAnimLayer::Create(pScene, "Base Layer");
-		lAnimStack->AddMember(lAnimLayer);
-
-		const double fps = 1.0 / parser->SampleRate;
-
-		for (int j = 0; j < pAnimationList->Count; j++)
-		{
-			ImportedAnimationSampledTrack^ sampleList = pAnimationList[j];
-
-			int endAt;
-			if (sampleList->Scalings && sampleList->Scalings->Length > 0)
-			{
-				endAt = sampleList->Scalings->Length;
-			}
-			else if (sampleList->Rotations && sampleList->Rotations->Length > 0)
-			{
-				endAt = sampleList->Rotations->Length;
-			}
-			else if (sampleList->Translations && sampleList->Translations->Length > 0)
-			{
-				endAt = sampleList->Translations->Length;
-			}
-			else if (sampleList->Curve && sampleList->Curve->Length > 0)
-			{
-				endAt = sampleList->Curve->Length;
-			}
-
-			String^ name = sampleList->Name;
-			int dotPos = name->IndexOf('.');
-			if (dotPos >= 0 && !ImportedHelpers::FindFrame(name, imported->FrameList[0]))
-			{
-				name = name->Substring(0, dotPos);
-			}
-			FbxNode* pNode = NULL;
-			char* pName = NULL;
-			try
-			{
-				pName = Fbx::StringToCharArray(name);
-				pNode = pScene->GetRootNode()->FindChild(pName);
-			}
-			finally
-			{
-				Marshal::FreeHGlobal((IntPtr)pName);
-			}
-
-				if (pNode == NULL)
-				{
-					if (!pNotFound->Contains(name))
-					{
-						pNotFound->Add(name);
-					}
-				}
-				else
-				{
-					if (sampleList->Scalings)
-					{
-						FbxAnimCurve* lCurveSX = pNode->LclScaling.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
-						FbxAnimCurve* lCurveSY = pNode->LclScaling.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
-						FbxAnimCurve* lCurveSZ = pNode->LclScaling.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
-						lCurveSX->KeyModifyBegin();
-						lCurveSY->KeyModifyBegin();
-						lCurveSZ->KeyModifyBegin();
-						for (int k = 0; k < endAt; k++)
-						{
-							if (!sampleList->Scalings[k].HasValue)
-								continue;
-
-							lTime.SetSecondDouble(fps * k);
-
-							lCurveSX->KeySet(lCurveSX->KeyAdd(lTime), lTime, sampleList->Scalings[k].Value.X);
-							lCurveSY->KeySet(lCurveSY->KeyAdd(lTime), lTime, sampleList->Scalings[k].Value.Y);
-							lCurveSZ->KeySet(lCurveSZ->KeyAdd(lTime), lTime, sampleList->Scalings[k].Value.Z);
-						}
-						lCurveSX->KeyModifyEnd();
-						lCurveSY->KeyModifyEnd();
-						lCurveSZ->KeyModifyEnd();
-					}
-
-					if (sampleList->Rotations)
-					{
-						FbxAnimCurve* lCurveRX = pNode->LclRotation.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
-						FbxAnimCurve* lCurveRY = pNode->LclRotation.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
-						FbxAnimCurve* lCurveRZ = pNode->LclRotation.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
-						lCurveRX->KeyModifyBegin();
-						lCurveRY->KeyModifyBegin();
-						lCurveRZ->KeyModifyBegin();
-						for (int k = 0; k < endAt; k++)
-						{
-							if (!sampleList->Rotations[k].HasValue)
-								continue;
-
-							lTime.SetSecondDouble(fps * k);
-
-							lCurveRX->KeySet(lCurveRX->KeyAdd(lTime), lTime, sampleList->Rotations[k].Value.X);
-							lCurveRY->KeySet(lCurveRY->KeyAdd(lTime), lTime, sampleList->Rotations[k].Value.Y);
-							lCurveRZ->KeySet(lCurveRZ->KeyAdd(lTime), lTime, sampleList->Rotations[k].Value.Z);
-						}
-						lCurveRX->KeyModifyEnd();
-						lCurveRY->KeyModifyEnd();
-						lCurveRZ->KeyModifyEnd();
-
-						if (EulerFilter)
-						{
-							FbxAnimCurve* lCurve[3];
-							lCurve[0] = lCurveRX;
-							lCurve[1] = lCurveRY;
-							lCurve[2] = lCurveRZ;
-							EulerFilter->Reset();
-							EulerFilter->SetTestForPath(true);
-							EulerFilter->SetQualityTolerance(filterPrecision);
-							EulerFilter->Apply(lCurve, 3);
-						}
-					}
-
-					if (sampleList->Translations)
-					{
-						FbxAnimCurve* lCurveTX = pNode->LclTranslation.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
-						FbxAnimCurve* lCurveTY = pNode->LclTranslation.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
-						FbxAnimCurve* lCurveTZ = pNode->LclTranslation.GetCurve(lAnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
-						lCurveTX->KeyModifyBegin();
-						lCurveTY->KeyModifyBegin();
-						lCurveTZ->KeyModifyBegin();
-						for (int k = 0; k < endAt; k++)
-						{
-							if (!sampleList->Translations[k].HasValue)
-								continue;
-
-							lTime.SetSecondDouble(fps * k);
-
-							lCurveTX->KeySet(lCurveTX->KeyAdd(lTime), lTime, sampleList->Translations[k].Value.X);
-							lCurveTY->KeySet(lCurveTY->KeyAdd(lTime), lTime, sampleList->Translations[k].Value.Y);
-							lCurveTZ->KeySet(lCurveTZ->KeyAdd(lTime), lTime, sampleList->Translations[k].Value.Z);
-						}
-						lCurveTX->KeyModifyEnd();
-						lCurveTY->KeyModifyEnd();
-						lCurveTZ->KeyModifyEnd();
-					}
-
-					if (sampleList->Curve)
+					if (keyframeList->Curve->Count > 0)
 					{
 						FbxNode* pMeshNode = pNode->GetChild(0);
 						FbxMesh* pMesh = pMeshNode ? pMeshNode->GetMesh() : NULL;
 						if (pMesh)
 						{
-							name = sampleList->Name->Substring(dotPos + 1);
+							name = keyframeList->Name->Substring(dotPos + 1);
 							int numBlendShapes = pMesh->GetDeformerCount(FbxDeformer::eBlendShape);
 							for (int bsIdx = 0; bsIdx < numBlendShapes; bsIdx++)
 							{
@@ -1067,28 +869,22 @@ namespace AssetStudio
 											else
 											{
 												flatMaxStrength = 100;
-												//Report::ReportLog("Error! Weight for flat Blend-Shape " + shapeName + " not found! Using a value of " + flatMaxStrength);
 											}
 										}
 										lCurve->KeyModifyBegin();
-										for (int k = 0; k < endAt; k++)
+										for each (auto Curve in keyframeList->Curve)
 										{
-											if (!sampleList->Curve[k].HasValue)
-											{
-												continue;
-											}
-
-											lTime.SetSecondDouble(fps * k);
+											lTime.SetSecondDouble(Curve->time);
 
 											auto keySetIndex = lCurve->KeyAdd(lTime);
 
 											if (!flatInbetween)
 											{
-												lCurve->KeySet(keySetIndex, lTime, sampleList->Curve[k].Value);
+												lCurve->KeySet(keySetIndex, lTime, Curve->value);
 											}
 											else
 											{
-												float val = sampleList->Curve[k].Value;
+												float val = Curve->value;
 												if (val >= flatMinStrength && val <= flatMaxStrength)
 												{
 													val = (val - flatMinStrength) * 100 / (flatMaxStrength - flatMinStrength);
@@ -1116,14 +912,6 @@ namespace AssetStudio
 										}
 									}
 								}
-							}
-						}
-						else
-						{
-							name = sampleList->Name;
-							if (!pNotFound->Contains(name))
-							{
-								pNotFound->Add(name);
 							}
 						}
 					}
@@ -1170,7 +958,7 @@ namespace AssetStudio
 				}
 
 				int meshVertexIndex = 0;
-				for (int meshObjIdx = 0; meshObjIdx < meshList->SubmeshList->Count; meshObjIdx++)
+				for (int meshObjIdx = pBaseNode->GetChildCount() - meshList->SubmeshList->Count; meshObjIdx < meshList->SubmeshList->Count; meshObjIdx++)
 				{
 					List<ImportedVertex^>^ vertList = meshList->SubmeshList[meshObjIdx]->VertexList;
 					FbxNode* pBaseMeshNode = pBaseNode->GetChild(meshObjIdx);

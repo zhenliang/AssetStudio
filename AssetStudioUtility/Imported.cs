@@ -12,7 +12,7 @@ namespace AssetStudio
         List<ImportedMesh> MeshList { get; }
         List<ImportedMaterial> MaterialList { get; }
         List<ImportedTexture> TextureList { get; }
-        List<ImportedAnimation> AnimationList { get; }
+        List<ImportedKeyframedAnimation> AnimationList { get; }
         List<ImportedMorph> MorphList { get; }
     }
 
@@ -62,6 +62,11 @@ namespace AssetStudio
         public int IndexOf(ImportedFrame obj)
         {
             return children.IndexOf(obj);
+        }
+
+        public void ClearChild()
+        {
+            children.Clear();
         }
 
         public IEnumerator<ImportedFrame> GetEnumerator()
@@ -140,34 +145,32 @@ namespace AssetStudio
         }
     }
 
-    public abstract class ImportedAnimation
+    public class ImportedKeyframedAnimation
     {
         public string Name { get; set; }
-    }
 
-    public abstract class ImportedAnimationTrackContainer<TrackType> : ImportedAnimation where TrackType : ImportedAnimationTrack
-    {
-        public List<TrackType> TrackList { get; set; }
+        public List<ImportedAnimationKeyframedTrack> TrackList { get; set; }
 
-        public TrackType FindTrack(string name)
+        public ImportedAnimationKeyframedTrack FindTrack(string name)
         {
-            return TrackList.Find(track => track.Name == name);
+            var track = TrackList.Find(x => x.Name == name);
+            if (track == null)
+            {
+                track = new ImportedAnimationKeyframedTrack { Name = name };
+                TrackList.Add(track);
+            }
+
+            return track;
         }
     }
 
-    public class ImportedKeyframedAnimation : ImportedAnimationTrackContainer<ImportedAnimationKeyframedTrack>
-    {
-
-    }
-
-    public class ImportedSampledAnimation : ImportedAnimationTrackContainer<ImportedAnimationSampledTrack>
-    {
-        public float SampleRate { get; set; }
-    }
-
-    public abstract class ImportedAnimationTrack
+    public class ImportedAnimationKeyframedTrack
     {
         public string Name { get; set; }
+        public List<ImportedKeyframe<Vector3>> Scalings = new List<ImportedKeyframe<Vector3>>();
+        public List<ImportedKeyframe<Vector3>> Rotations = new List<ImportedKeyframe<Vector3>>();
+        public List<ImportedKeyframe<Vector3>> Translations = new List<ImportedKeyframe<Vector3>>();
+        public List<ImportedKeyframe<float>> Curve = new List<ImportedKeyframe<float>>();
     }
 
     public class ImportedKeyframe<T>
@@ -180,21 +183,6 @@ namespace AssetStudio
             this.time = time;
             this.value = value;
         }
-    }
-
-    public class ImportedAnimationKeyframedTrack : ImportedAnimationTrack
-    {
-        public List<ImportedKeyframe<Vector3>> Scalings = new List<ImportedKeyframe<Vector3>>();
-        public List<ImportedKeyframe<Vector3>> Rotations = new List<ImportedKeyframe<Vector3>>();
-        public List<ImportedKeyframe<Vector3>> Translations = new List<ImportedKeyframe<Vector3>>();
-    }
-
-    public class ImportedAnimationSampledTrack : ImportedAnimationTrack
-    {
-        public Vector3?[] Scalings;
-        public Vector3?[] Rotations;
-        public Vector3?[] Translations;
-        public float?[] Curve;
     }
 
     public class ImportedMorph
@@ -216,7 +204,7 @@ namespace AssetStudio
 
     public static class ImportedHelpers
     {
-        public static ImportedFrame FindFrame(String name, ImportedFrame root)
+        public static ImportedFrame FindFrame(string name, ImportedFrame root)
         {
             ImportedFrame frame = root;
             if ((frame != null) && (frame.Name == name))
@@ -235,7 +223,7 @@ namespace AssetStudio
             return null;
         }
 
-        public static ImportedMesh FindMesh(String frameName, List<ImportedMesh> importedMeshList)
+        public static ImportedMesh FindMesh(string frameName, List<ImportedMesh> importedMeshList)
         {
             foreach (ImportedMesh mesh in importedMeshList)
             {
@@ -269,7 +257,7 @@ namespace AssetStudio
             return null;
         }
 
-        public static ImportedMaterial FindMaterial(String name, List<ImportedMaterial> importedMats)
+        public static ImportedMaterial FindMaterial(string name, List<ImportedMaterial> importedMats)
         {
             foreach (ImportedMaterial mat in importedMats)
             {
