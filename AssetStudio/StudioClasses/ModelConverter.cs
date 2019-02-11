@@ -389,6 +389,13 @@ namespace AssetStudio
                     //No first use m_BoneNameHashes, because it may be wrong
                     if (string.IsNullOrEmpty(bone.Name))
                     {
+                        // >> home.zhenliang@gmail.com 
+                        if (mesh.m_BoneNameHashes.Length <= i)
+                        {
+                            continue; // ZEPETP 的模型可能会在这里越界
+                        }
+                        // << home.zhenliang@gmail.com 
+
                         var boneHash = mesh.m_BoneNameHashes[i];
                         bone.Name = GetNameFromBonePathHashes(boneHash);
                         if (string.IsNullOrEmpty(bone.Name))
